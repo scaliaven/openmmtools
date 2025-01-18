@@ -692,16 +692,18 @@ class MultiStateReporter(object):
             sampler_subset = []
             for sampler_state in sampler_states:
                 positions = sampler_state.positions
+                collective_variables = sampler_state.collective_variables
                 # Subset positions
                 # Need the [arg, :] to get uniform behavior with tuple and list for arg
                 # since a ndarray[tuple] is different than ndarray[list]
                 position_subset = positions[self._analysis_particle_indices, :]
+                collective_variables_subset = collective_variables["forces"][self._analysis_particle_indices, :] # only takes forces
                 velocities_subset = None
                 if sampler_state._unitless_velocities is not None:
                     velocities = sampler_state.velocities
                     velocities_subset = velocities[self._analysis_particle_indices, :]
                 sampler_subset.append(states.SamplerState(position_subset, velocities=velocities_subset,
-                                                                  box_vectors=sampler_state.box_vectors))
+                                                                  box_vectors=sampler_state.box_vectors, force=collective_variables_subset))
             self._write_sampler_states_to_given_file(sampler_subset, iteration, storage_file='analysis',
                                                      obey_checkpoint_interval=False)
 
@@ -1601,6 +1603,15 @@ class MultiStateReporter(object):
                                          "coordinate 'spatial' of atom 'atom' from replica 'replica' for "
                                          "iteration 'iteration'.")
 
+            # Define collective variables variables (i.e. forces in this case)
+            ncvar_collective_variables = dataset.createVariable('collective_variables', 'f4',
+                                                     ('iteration', 'replica', 'atom', 'spatial'),
+                                                     zlib=True, chunksizes=(1, n_replicas, n_atoms, 3))
+            ncvar_collective_variables.units = 'kJ/(nm mol)'
+            ncvar_collective_variables.long_name = ("collective_variables[iteration][replica][atom][spatial] is collective_variables of "
+                                         "coordinate 'spatial' of atom 'atom' from replica 'replica' for "
+                                         "iteration 'iteration'.")
+
             # Define variables for periodic systems
             if is_periodic:
                 ncvar_box_vectors = dataset.createVariable('box_vectors', 'f4',
@@ -1652,12 +1663,17 @@ class MultiStateReporter(object):
             # Store sampler states.
             # Create a numpy array to avoid making multiple (possibly inefficient) calls to netCDF assignments
             positions = np.zeros([n_replicas, n_particles, 3])
+            forces = np.zeros([n_replicas, n_particles, 3])
             for replica_index, sampler_state in enumerate(sampler_states):
                 # Store positions in memory first
                 x = sampler_state.positions / unit.nanometers
                 positions[replica_index, :, :] = x[:, :]
+                if sampler_state.collective_variables is not None:
+                    x = sampler_state.collective_variables['forces'] / unit.kilojoules_per_mole / unit.nanometers
+                    forces[replica_index, :, :] = x[:, :]
             # Store positions
             storage.variables['positions'][write_iteration, :, :, :] = positions
+            storage.variables['collective_variables'][write_iteration, :, :, :] = forces # only store forces
 
             # Create a numpy array to avoid making multiple (possibly inefficient) calls to netCDF assignments
             velocities = np.zeros([n_replicas, n_particles, 3])
@@ -1729,6 +1745,8 @@ class MultiStateReporter(object):
                 # Restore positions.
                 x = storage.variables['positions'][read_iteration, replica_index, :, :].astype(np.float64)
                 positions = unit.Quantity(x, unit.nanometers)
+                x = storage.variables['collective_variables'][read_iteration, replica_index, :, :].astype(np.float64) #extract forces
+                collective_variables = unit.Quantity(x, unit.kilojoules_per_mole / unit.nanometers)
 
                 # Restore velocities
                 # try-catch exception, enabling reading legacy/older serialized objects from openmmtools<0.21.3
@@ -1747,7 +1765,7 @@ class MultiStateReporter(object):
                     box_vectors = None
 
                 # Create SamplerState.
-                sampler_states.append(states.SamplerState(positions=positions, velocities=velocities, box_vectors=box_vectors))
+                sampler_states.append(states.SamplerState(positions=positions, velocities=velocities, box_vectors=box_vectors, force = collective_variables))
 
             return sampler_states
         else:

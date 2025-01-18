@@ -2020,16 +2020,17 @@ class SamplerState(object):
     # Public interface
     # -------------------------------------------------------------------------
 
-    def __init__(self, positions, velocities=None, box_vectors=None):
+    def __init__(self, positions, velocities=None, box_vectors=None, collective_variables = None, force = None):
         # Allocate variables, they get set in _initialize
         self._positions = None
         self._velocities = None
         self._box_vectors = None
-        self._collective_variables = None
+        self._collective_variables = collective_variables
+        self.force = force
         self._kinetic_energy = None
         self._potential_energy = None
         args = []
-        for input in [positions, velocities, box_vectors]:
+        for input in [positions, velocities, box_vectors, collective_variables]:
             if isinstance(input, unit.Quantity) and not isinstance(input._value, np.ndarray):
                 args.append(np.array(input/input.unit)*input.unit)
             else:
@@ -2513,7 +2514,8 @@ class SamplerState(object):
                 pass
         # Trap no variables found (empty dict), return None
         # Cast defaultdict back to dict
-        self._collective_variables = dict(collective_variables) if collective_variables else None
+        forces = context_state.getState(getForces=True).getForces(asNumpy=True)
+        self._collective_variables = {**dict(collective_variables),"forces": [force for force in forces]} if collective_variables else {"forces": forces}
 
     @property
     def _are_positions_valid(self):
